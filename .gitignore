@@ -1,0 +1,12 @@
+# Node / build
+node_modules/
+dist/
+.vite/
+*.log
+
+# Env / cache
+.env*
+.DS_Store
+
+# Editors
+.vscode/
