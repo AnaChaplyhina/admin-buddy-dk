@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { copyToClipboard, exportDocx, exportPdfFromElement } from "./exporters";
 import { llm } from "../../lib/webllm";
 import { PRESETS, type ScenarioKey, type Tone } from "./presets";
+import { loadProfile, saveProfile, type Profile } from "./profile";
 
 type Lang = "uk" | "en" | "da";
 type Draft = {
@@ -12,6 +13,7 @@ type Draft = {
   recipient: string;
   body: string;
   output: string;
+  savedAt?: number;
 };
 
 const STORAGE_KEY = "abd_draft_v1";
@@ -31,7 +33,17 @@ export default function GeneratorPage() {
   const [statusMsg, setStatusMsg] = useState<string | undefined>("");
 
   const [busy, setBusy] = useState(false);
+
+  // --- профіль відправника ---
+  const [profile, setProfile] = useState<Profile>(loadProfile());
+  const [profileSavedAt, setProfileSavedAt] = useState<number | null>(null);
+  const [showProfile, setShowProfile] = useState(false);
+
+  // індикатори збереження/відновлення чернетки
+  const hasMounted = useRef(false);
   const [restored, setRestored] = useState(false);
+  const [savedAt, setSavedAt] = useState<number | null>(null);
+
   const previewRef = useRef<HTMLDivElement>(null);
 
   // ---------- Пресет ----------
@@ -44,9 +56,19 @@ export default function GeneratorPage() {
   }
 
   // ---------- MOCK без AI ----------
+  function buildSignature(): string {
+    const lines = [
+      "Med venlig hilsen",
+      profile.name || "[Dit navn]",
+      profile.phone ? `Tlf.: ${profile.phone}` : "",
+      profile.email ? `Email: ${profile.email}` : "",
+      profile.address ? profile.address : "",
+    ].filter(Boolean);
+    return lines.join("\n");
+  }
+
   function generateMock() {
     const greeting = recipient ? `Kære ${recipient},` : "Kære modtager,";
-    const footer = tone === "venlig" ? "De bedste hilsner" : "Med venlig hilsen";
     const emne = subject || "(uden emne)";
     const text = `Emne: ${emne}
 
@@ -54,8 +76,7 @@ ${greeting}
 
 ${body || "(beskrivelse…)"}
 
-${footer}
-[Dit navn]`;
+${buildSignature()}`;
     setOutput(text);
   }
 
@@ -66,63 +87,56 @@ ${footer}
       setProgress(llm.status.progress);
       setStatusMsg(llm.status.message);
     }, 300);
-    llm.init(); // модель задається у webllm.ts (Phi-3.5-mini …)
+    llm.init(); // модель задається у webllm.ts
     return () => clearInterval(timer);
   }, []);
 
-  // ---------- Відновлення чернетки ----------
+  // ---------- Відновлення чернетки при першому завантаженні ----------
   useEffect(() => {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
-      if (!raw) return;
-      const d = JSON.parse(raw) as Draft;
-      setInputLang(d.inputLang);
-      setTone(d.tone);
-      setScenario(d.scenario);
-      setSubject(d.subject);
-      setRecipient(d.recipient);
-      setBody(d.body);
-      setOutput(d.output);
-      setRestored(true);
-      setTimeout(() => setRestored(false), 3000);
+      if (raw) {
+        const d = JSON.parse(raw) as Draft;
+        setInputLang(d.inputLang);
+        setTone(d.tone);
+        setScenario(d.scenario);
+        setSubject(d.subject);
+        setRecipient(d.recipient);
+        setBody(d.body);
+        setOutput(d.output);
+        setRestored(true);
+        setTimeout(() => setRestored(false), 2000);
+      }
     } catch {
-      // ignore
+      /* ignore */
+    } finally {
+      hasMounted.current = true;
     }
   }, []);
 
-  // ---------- Автозбереження (debounce 300мс) ----------
+  // ---------- Автозбереження чернетки (просте, без зайвих наворотів) ----------
   useEffect(() => {
-    const data: Draft = {
-      inputLang,
-      tone,
-      scenario,
-      subject,
-      recipient,
-      body,
-      output,
-    };
+    if (!hasMounted.current) return;
+    const isEmpty = !subject && !recipient && !body && !output;
+    if (isEmpty) return;
+
     const id = setTimeout(() => {
       try {
+        const data: Draft = {
+          inputLang, tone, scenario, subject, recipient, body, output, savedAt: Date.now(),
+        };
         localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-      } catch {
-        // ignore
-      }
-    }, 300);
+        setSavedAt(data.savedAt!);
+      } catch { /* ignore */ }
+    }, 400);
+
     return () => clearTimeout(id);
   }, [inputLang, tone, scenario, subject, recipient, body, output]);
 
-  // ---------- Очистити все ----------
-  function clearAll() {
-    setScenario("custom");
-    setSubject("");
-    setRecipient("");
-    setBody("");
-    setOutput("");
-    try {
-      localStorage.removeItem(STORAGE_KEY);
-    } catch {
-      // ignore
-    }
+  // ---------- Збереження профілю вручну ----------
+  function saveProfileNow() {
+    saveProfile(profile);
+    setProfileSavedAt(Date.now());
   }
 
   // ---------- ГЕНЕРАЦІЯ З AI ----------
@@ -179,7 +193,16 @@ ${footer}
         ? cleaned
         : `Emne: ${subject || "(uden emne)"}\n\n${cleaned}`;
 
-      setOutput(withEmne.trim());
+      // підставляємо ім'я + контакти
+      let finalText = withEmne.replace("[Dit navn]", profile.name || "[Dit navn]");
+      const contacts = [profile.phone && `Tlf.: ${profile.phone}`, profile.email && `Email: ${profile.email}`, profile.address]
+        .filter(Boolean)
+        .join("\n");
+      if (contacts) {
+        finalText = `${finalText}\n${contacts}`;
+      }
+
+      setOutput(finalText.trim());
     } catch (e: any) {
       alert(e?.message || "Generation error");
     } finally {
@@ -187,28 +210,23 @@ ${footer}
     }
   }
 
+  const savedText = savedAt ? `Збережено о ${new Date(savedAt).toLocaleTimeString()}` : "";
+  const profileSavedText = profileSavedAt ? `Профіль збережено о ${new Date(profileSavedAt).toLocaleTimeString()}` : "";
+
   return (
     <div className="mx-auto max-w-6xl p-4 grid grid-cols-1 md:grid-cols-2 gap-4">
       {/* Ліва колонка — форма */}
       <section className="space-y-4 rounded-2xl border bg-white p-4">
         <div className="flex flex-wrap items-center gap-3">
           <span className="text-sm">Мова вводу:</span>
-          <select
-            value={inputLang}
-            onChange={(e) => setInputLang(e.target.value as Lang)}
-            className="rounded-xl border px-3 py-2"
-          >
+          <select value={inputLang} onChange={(e) => setInputLang(e.target.value as Lang)} className="rounded-xl border px-3 py-2">
             <option value="uk">Українська</option>
             <option value="en">English</option>
             <option value="da">Dansk</option>
           </select>
 
-          <span className="ml-4 text-sm">Тон:</span>
-          <select
-            value={tone}
-            onChange={(e) => setTone(e.target.value as Tone)}
-            className="rounded-xl border px-3 py-2"
-          >
+        <span className="ml-4 text-sm">Тон:</span>
+          <select value={tone} onChange={(e) => setTone(e.target.value as Tone)} className="rounded-xl border px-3 py-2">
             <option value="formel">Formel</option>
             <option value="neutral">Neutral</option>
             <option value="venlig">Venlig</option>
@@ -229,6 +247,8 @@ ${footer}
               <option key={p.id} value={p.id}>{p.title}</option>
             ))}
           </select>
+
+          <span className="ml-auto text-xs text-gray-500">{savedText}</span>
         </div>
 
         {!modelReady && (
@@ -247,11 +267,68 @@ ${footer}
           </div>
         )}
 
-        {!("gpu" in navigator) && (
-          <div className="rounded-xl border p-3 bg-amber-50 text-sm">
-            Ваш браузер/пристрій не підтримує WebGPU. Спробуйте Chrome/Edge на ПК з підтримкою WebGPU.
-          </div>
-        )}
+        {/* Дані відправника */}
+        <div className="rounded-xl border bg-gray-50">
+          <button
+            type="button"
+            onClick={() => setShowProfile((s) => !s)}
+            className="w-full text-left px-3 py-2 text-sm font-medium"
+          >
+            {showProfile ? "▼" : "▶"} Дані відправника (підпис)
+          </button>
+          {showProfile && (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 px-3 pb-3">
+              <div>
+                <label className="block text-xs text-gray-600 mb-1">Імʼя</label>
+                <input
+                  value={profile.name}
+                  onChange={(e) => setProfile({ ...profile, name: e.target.value })}
+                  className="w-full rounded-xl border px-3 py-2"
+                  placeholder="Ваше ім’я"
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-gray-600 mb-1">Телефон</label>
+                <input
+                  value={profile.phone}
+                  onChange={(e) => setProfile({ ...profile, phone: e.target.value })}
+                  className="w-full rounded-xl border px-3 py-2"
+                  placeholder="+45 …"
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-gray-600 mb-1">Email</label>
+                <input
+                  value={profile.email}
+                  onChange={(e) => setProfile({ ...profile, email: e.target.value })}
+                  className="w-full rounded-xl border px-3 py-2"
+                  placeholder="you@example.com"
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-gray-600 mb-1">Адреса</label>
+                <input
+                  value={profile.address}
+                  onChange={(e) => setProfile({ ...profile, address: e.target.value })}
+                  className="w-full rounded-xl border px-3 py-2"
+                  placeholder="Adresse, postnr, by"
+                />
+              </div>
+              <div className="sm:col-span-2 flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={saveProfileNow}
+                  className="rounded-lg border px-3 py-2 text-sm"
+                >
+                  Зберегти профіль
+                </button>
+                <span className="text-xs text-gray-500">
+                  {profileSavedText}
+                </span>
+              </div>
+            </div>
+          )}
+        </div>
 
         <div>
           <label className="block text-sm font-medium mb-1">Тема (Emne)</label>
@@ -321,7 +398,14 @@ ${footer}
           </button>
 
           <button
-            onClick={clearAll}
+            onClick={() => {
+              setScenario("custom");
+              setSubject("");
+              setRecipient("");
+              setBody("");
+              setOutput("");
+              try { localStorage.removeItem(STORAGE_KEY); setSavedAt(null); } catch {}
+            }}
             className="rounded-2xl px-4 py-2 border shadow-sm hover:shadow transition"
             title="Очистити форму та чернетку"
           >
@@ -344,5 +428,8 @@ ${footer}
     </div>
   );
 }
+
+
+
 
 
