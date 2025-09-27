@@ -3,19 +3,15 @@ import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/postcss";
 
 export default defineConfig({
+  // якщо деплоїш на GitHub Pages, лишай base з назвою репо; локально — не критично
+  // base: "/admin-buddy-dk/",
   plugins: [react()],
-  // важливо для WebLLM: не предбандлити пакет, щоб уникнути дублю класів у воркері
   optimizeDeps: {
     exclude: ["@mlc-ai/web-llm"],
   },
-  css: {
-    postcss: {
-      plugins: [tailwindcss()],
-    },
-  },
-  build: {
-    target: "esnext", // сучасні браузери, ок для WebGPU/wasm
-  },
+  css: { postcss: { plugins: [tailwindcss()] } },
+  build: { target: "esnext" },
 });
+
 
 
