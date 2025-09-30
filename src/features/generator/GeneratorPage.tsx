@@ -4,6 +4,8 @@ import { llm } from "../../lib/webllm";
 import { PRESETS, type ScenarioKey, type Tone } from "./presets";
 import { loadProfile, saveProfile, type Profile } from "./profile";
 import StatusBar from "./StatusBar";
+import HistoryPanel from "./HistoryPanel";
+import { addHistory, clearHistory, listHistory, removeHistory, type HistoryItem } from "./history";
 
 type Lang = "uk" | "en" | "da";
 type Draft = {
@@ -23,6 +25,9 @@ export default function GeneratorPage() {
   const [body, setBody] = useState("");
   const [output, setOutput] = useState("");
 
+  // історія
+  const [history, setHistory] = useState<HistoryItem[]>(listHistory());
+
   // профіль
   const initialProfile = loadProfile();
   const [profile, setProfile] = useState<Profile>(initialProfile);
@@ -38,12 +43,12 @@ export default function GeneratorPage() {
   const hasMounted = useRef(false);
   const [savedAt, setSavedAt] = useState<number | null>(null);
 
-  // refs для скролу до помилки
+  // refs для валідації
   const subjRef = useRef<HTMLInputElement>(null);
   const recRef = useRef<HTMLInputElement>(null);
   const bodyRef = useRef<HTMLTextAreaElement>(null);
 
-  // --------- пресет ---------
+  // пресет
   function applyPreset(key: ScenarioKey) {
     const p = PRESETS[key];
     setScenario(key); setTone(p.tone);
@@ -51,7 +56,7 @@ export default function GeneratorPage() {
     if (!body) setBody(p.bodyHint);
   }
 
-  // --------- підпис ---------
+  // підпис
   function signature(): string {
     const lines = [
       "Med venlig hilsen",
@@ -63,7 +68,7 @@ export default function GeneratorPage() {
     return lines.join("\n");
   }
 
-  // --------- тестова генерація ---------
+  // тест
   function generateMock() {
     const emne = subject || "(uden emne)";
     const greeting = recipient ? `Kære ${recipient},` : "Kære modtager,";
@@ -77,7 +82,7 @@ ${signature()}`;
     setOutput(text);
   }
 
-  // --------- ініт моделі ---------
+  // ініт моделі
   useEffect(() => {
     const t = setInterval(() => {
       setModelReady(llm.status.ready);
@@ -88,7 +93,7 @@ ${signature()}`;
     return () => clearInterval(t);
   }, []);
 
-  // --------- відновлення чернетки ---------
+  // відновлення чернетки
   useEffect(() => {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
@@ -101,7 +106,7 @@ ${signature()}`;
     finally { hasMounted.current = true; }
   }, []);
 
-  // --------- автозбереження ---------
+  // автозбереження
   useEffect(() => {
     if (!hasMounted.current) return;
     const isEmpty = !subject && !recipient && !body && !output;
@@ -116,10 +121,10 @@ ${signature()}`;
     return () => clearTimeout(id);
   }, [inputLang, tone, scenario, subject, recipient, body, output]);
 
-  // --------- зберегти профіль ---------
+  // зберегти профіль
   function saveProfileNow() { saveProfile(profile); setProfileSavedAt(Date.now()); }
 
-  // ===================== ВАЛІДАЦІЯ =====================
+  // валідація
   type Errors = { subject?: string; recipient?: string; body?: string; };
   const [touched, setTouched] = useState({ subject: false, recipient: false, body: false });
 
@@ -134,13 +139,9 @@ ${signature()}`;
   const hasErrors = Object.keys(errors).length > 0;
 
   function inputCls(hasErr: boolean) {
-    return (
-      "w-full rounded-xl px-3 py-2 border " +
-      (hasErr ? "border-red-500 focus:outline-none" : "")
-    );
+    return "input " + (hasErr ? "border-red-500 focus:ring-red-500/20" : "");
   }
 
-  // --------- генерація з AI (з валідацією) ---------
   async function onGenerateAI() {
     setTouched({ subject: true, recipient: true, body: true });
     const e = getErrors();
@@ -157,7 +158,7 @@ ${signature()}`;
 
     const toneTxt =
       tone === "formel" ? "formelt og kortfattet" :
-      tone === "venlig" ? "venligt og imødekommende" : "neutralt og professionelt";
+      tone === "venlig" ? "venligt og imødekommende" : "neutralt og professionellt";
 
     const sys = [
       "Du er en assistent, der skriver officielle breve på DANSK.",
@@ -200,178 +201,207 @@ ${signature()}`;
     setOutput(finalText.trim());
   }
 
+  // історія
+  function saveToHistory() {
+    if (!output.trim()) return;
+    const next = addHistory({ inputLang, tone, scenario, subject, recipient, body, output });
+    setHistory(next);
+  }
+  function loadFromHistory(id: string) {
+    const it = history.find(h => h.id === id);
+    if (!it) return;
+    setInputLang(it.inputLang);
+    setTone(it.tone as Tone);
+    setScenario((it.scenario as ScenarioKey) || "custom");
+    setSubject(it.subject);
+    setRecipient(it.recipient);
+    setBody(it.body);
+    setOutput(it.output);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+  function deleteFromHistory(id: string) {
+    const next = removeHistory(id);
+    setHistory(next);
+  }
+  function clearAllHistory() {
+    if (!confirm("Очистити всю історію?")) return;
+    clearHistory();
+    setHistory([]);
+  }
+
   const savedText = savedAt ? `Збережено о ${new Date(savedAt).toLocaleTimeString()}` : "";
   const profileSavedText = profileSavedAt ? `Профіль збережено о ${new Date(profileSavedAt).toLocaleTimeString()}` : "";
 
   return (
-    <div className="mx-auto max-w-6xl p-4 grid grid-cols-1 md:grid-cols-2 gap-4">
+    <div className="grid grid-cols-1 md:grid-cols-[1fr_420px] gap-6">
       {/* Ліва колонка */}
-      <section className="space-y-4 rounded-2xl border bg-white p-4">
-        {/* Панель стану */}
-        <StatusBar
-          gpu={"gpu" in navigator}
-          ready={modelReady}
-          progress={progress}
-          msg={statusMsg}
-        />
+      <section className="card space-y-4">
+        {/* Статус згори */}
+        <div className="flex items-center justify-between">
+          <StatusBar gpu={"gpu" in navigator} ready={modelReady} progress={progress} msg={statusMsg} />
+          <span className="help">{savedText}</span>
+        </div>
 
-        <div className="flex flex-wrap items-center gap-3">
-          <span className="text-sm">Мова вводу:</span>
-          <select value={inputLang} onChange={e => setInputLang(e.target.value as Lang)} className="rounded-xl border px-3 py-2">
-            <option value="uk">Українська</option><option value="en">English</option><option value="da">Dansk</option>
-          </select>
-
-          <span className="ml-4 text-sm">Тон:</span>
-          <select value={tone} onChange={e => setTone(e.target.value as Tone)} className="rounded-xl border px-3 py-2">
-            <option value="formel">Formel</option><option value="neutral">Neutral</option><option value="venlig">Venlig</option>
-          </select>
-
-          <span className="ml-4 text-sm">Сценарій:</span>
-          <select
-            value={scenario}
-            onChange={(e) => { const val = e.target.value as ScenarioKey | "custom"; setScenario(val); if (val !== "custom") applyPreset(val as ScenarioKey); }}
-            className="rounded-xl border px-3 py-2"
-          >
-            <option value="custom">Без пресету</option>
-            {Object.values(PRESETS).map(p => <option key={p.id} value={p.id}>{p.title}</option>)}
-          </select>
-
-          <span className="ml-auto text-xs text-gray-500">{savedText}</span>
+        {/* Перший ряд — налаштування */}
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <div>
+            <label className="section-title">Мова вводу</label>
+            <select className="select" value={inputLang} onChange={e => setInputLang(e.target.value as Lang)}>
+              <option value="uk">Українська</option><option value="en">English</option><option value="da">Dansk</option>
+            </select>
+          </div>
+          <div>
+            <label className="section-title">Тон</label>
+            <select className="select" value={tone} onChange={e => setTone(e.target.value as Tone)}>
+              <option value="formel">Formel</option><option value="neutral">Neutral</option><option value="venlig">Venlig</option>
+            </select>
+          </div>
+          <div>
+            <label className="section-title">Сценарій</label>
+            <select
+              className="select"
+              value={scenario}
+              onChange={(e) => {
+                const val = e.target.value as ScenarioKey | "custom";
+                setScenario(val);
+                if (val !== "custom") applyPreset(val as ScenarioKey);
+              }}
+            >
+              <option value="custom">Без пресету</option>
+              {Object.values(PRESETS).map((p) => (
+                <option key={p.id} value={p.id}>{p.title}</option>
+              ))}
+            </select>
+          </div>
         </div>
 
         {/* Дані відправника */}
         <div className="rounded-2xl border bg-gray-50">
-          <button type="button" onClick={() => setShowProfile(s => !s)} className="w-full text-left px-3 py-2 text-sm font-medium">
+          <button
+            type="button"
+            onClick={() => setShowProfile(s => !s)}
+            className="w-full text-left px-3 py-2 text-sm font-medium"
+          >
             {showProfile ? "▼" : "▶"} Дані відправника (підпис)
           </button>
           {showProfile && (
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 px-3 pb-3">
               <div>
-                <label className="block text-xs text-gray-600 mb-1">Імʼя</label>
-                <input value={profile.name} onChange={e => setProfile({ ...profile, name: e.target.value })} className="w-full rounded-xl border px-3 py-2" placeholder="Ваше ім’я" />
+                <label className="section-title">Імʼя</label>
+                <input className="input" value={profile.name} onChange={e => setProfile({ ...profile, name: e.target.value })} placeholder="Ваше ім’я" />
               </div>
               <div>
-                <label className="block text-xs text-gray-600 mb-1">Телефон</label>
-                <input value={profile.phone} onChange={e => setProfile({ ...profile, phone: e.target.value })} className="w-full rounded-xl border px-3 py-2" placeholder="+45 …" />
+                <label className="section-title">Телефон</label>
+                <input className="input" value={profile.phone} onChange={e => setProfile({ ...profile, phone: e.target.value })} placeholder="+45 …" />
               </div>
               <div>
-                <label className="block text-xs text-gray-600 mb-1">Email</label>
-                <input value={profile.email} onChange={e => setProfile({ ...profile, email: e.target.value })} className="w-full rounded-xl border px-3 py-2" placeholder="you@example.com" />
+                <label className="section-title">Email</label>
+                <input className="input" value={profile.email} onChange={e => setProfile({ ...profile, email: e.target.value })} placeholder="you@example.com" />
               </div>
               <div>
-                <label className="block text-xs text-gray-600 mb-1">Адреса</label>
-                <input value={profile.address} onChange={e => setProfile({ ...profile, address: e.target.value })} className="w-full rounded-xl border px-3 py-2" placeholder="Adresse, postnr, by" />
+                <label className="section-title">Адреса</label>
+                <input className="input" value={profile.address} onChange={e => setProfile({ ...profile, address: e.target.value })} placeholder="Adresse, postnr, by" />
               </div>
 
-              {/* Превʼю підпису */}
               <div className="sm:col-span-2">
-                <div className="text-xs text-gray-500 mb-1">Підпис (превʼю):</div>
+                <div className="help mb-1">Підпис (превʼю):</div>
                 <pre className="text-xs whitespace-pre-wrap rounded-xl border bg-white p-2">{signature()}</pre>
               </div>
 
               <div className="sm:col-span-2 flex items-center gap-2">
-                <button type="button" onClick={saveProfileNow} className="rounded-lg border px-3 py-2 text-sm">Зберегти профіль</button>
-                <span className="text-xs text-gray-500">{profileSavedText}</span>
+                <button type="button" className="btn-ghost" onClick={saveProfileNow}>Зберегти профіль</button>
+                <span className="help">{profileSavedText}</span>
               </div>
             </div>
           )}
         </div>
 
-        {/* Поля з валідацією */}
+        {/* Поля форми */}
         <div>
-          <label className="block text-sm font-medium mb-1">Тема (Emne)</label>
+          <label className="section-title">Тема (Emne)</label>
           <input
             ref={subjRef}
-            value={subject}
-            onChange={e => setSubject(e.target.value)}
-            onBlur={() => setTouched(s => ({ ...s, subject: true }))}
             className={inputCls(touched.subject && !!errors.subject)}
+            value={subject}
+            onChange={(e) => setSubject(e.target.value)}
+            onBlur={() => setTouched(s => ({ ...s, subject: true }))}
             placeholder="Коротко: про що запит/прохання"
           />
           {touched.subject && errors.subject && <p className="text-xs text-red-600 mt-1">{errors.subject}</p>}
         </div>
 
         <div>
-          <label className="block text-sm font-medium mb-1">Кому (Modtager)</label>
+          <label className="section-title">Кому (Modtager)</label>
           <input
             ref={recRef}
-            value={recipient}
-            onChange={e => setRecipient(e.target.value)}
-            onBlur={() => setTouched(s => ({ ...s, recipient: true }))}
             className={inputCls(touched.recipient && !!errors.recipient)}
+            value={recipient}
+            onChange={(e) => setRecipient(e.target.value)}
+            onBlur={() => setTouched(s => ({ ...s, recipient: true }))}
             placeholder="Kommune / afdeling / institution / udlejer"
           />
           {touched.recipient && errors.recipient && <p className="text-xs text-red-600 mt-1">{errors.recipient}</p>}
         </div>
 
         <div>
-          <label className="block text-sm font-medium mb-1">Текст (будь-якою мовою)</label>
+          <label className="section-title">Текст (будь-якою мовою)</label>
           <textarea
             ref={bodyRef}
+            className={inputCls(touched.body && !!errors.body) + " min-h-[10rem]"}
             value={body}
-            onChange={e => setBody(e.target.value)}
+            onChange={(e) => setBody(e.target.value)}
             onBlur={() => setTouched(s => ({ ...s, body: true }))}
-            className={inputCls(touched.body && !!errors.body) + " h-40"}
             placeholder={scenario !== "custom" ? PRESETS[scenario as ScenarioKey].bodyHint : "Опишіть деталі вашого запиту"}
           />
           {touched.body && errors.body && <p className="text-xs text-red-600 mt-1">{errors.body}</p>}
         </div>
 
+        {/* Дії */}
         <div className="flex flex-wrap gap-2">
-          <button onClick={generateMock} className="rounded-2xl px-4 py-2 border shadow-sm hover:shadow transition">
-            Згенерувати (тест)
-          </button>
-
-          <button
-            onClick={onGenerateAI}
-            disabled={!modelReady || hasErrors}
-            className="rounded-2xl px-4 py-2 border shadow-sm hover:shadow transition disabled:opacity-50"
-            title={!modelReady ? "Модель ще завантажується" : hasErrors ? "Заповніть обовʼязкові поля" : ""}
-          >
+          <button className="btn-ghost" onClick={generateMock}>Згенерувати (тест)</button>
+          <button className="btn-primary disabled:opacity-50" onClick={onGenerateAI} disabled={!modelReady || hasErrors}>
             {modelReady ? "Згенерувати (AI)" : "Завантаження…"}
           </button>
-
-          <button onClick={() => copyToClipboard(output)} disabled={!output} className="rounded-2xl px-4 py-2 border shadow-sm hover:shadow transition disabled:opacity-50">
-            Копіювати
-          </button>
-          <button onClick={() => exportDocx(output)} disabled={!output} className="rounded-2xl px-4 py-2 border shadow-sm hover:shadow transition disabled:opacity-50">
-            Експорт .docx
-          </button>
-          <button onClick={() => {
-              const el = document.activeElement as HTMLElement | null; el?.blur();
+          <button className="btn-ghost disabled:opacity-50" onClick={saveToHistory} disabled={!output}>Зберегти в історію</button>
+          <button className="btn-ghost disabled:opacity-50" onClick={() => copyToClipboard(output)} disabled={!output}>Копіювати</button>
+          <button className="btn-ghost disabled:opacity-50" onClick={() => exportDocx(output)} disabled={!output}>Експорт .docx</button>
+          <button className="btn-ghost disabled:opacity-50" onClick={() => {
               const node = document.querySelector("#preview-hook") as HTMLDivElement | null;
               node && exportPdfFromElement(node);
-            }}
-            disabled={!output}
-            className="rounded-2xl px-4 py-2 border shadow-sm hover:shadow transition disabled:opacity-50"
-          >
-            Експорт PDF
-          </button>
-
-          <button
-            onClick={() => { setScenario("custom"); setSubject(""); setRecipient(""); setBody(""); setOutput(""); try { localStorage.removeItem(STORAGE_KEY); setSavedAt(null); } catch {} }}
-            className="rounded-2xl px-4 py-2 border shadow-sm hover:shadow transition"
-            title="Очистити форму та чернетку"
-          >
-            Очистити
-          </button>
+            }} disabled={!output}>Експорт PDF</button>
+          <button className="btn-danger" onClick={() => {
+              setScenario("custom"); setSubject(""); setRecipient(""); setBody(""); setOutput("");
+              try { localStorage.removeItem(STORAGE_KEY); setSavedAt(null); } catch {}
+            }}>Очистити</button>
         </div>
 
-        <p className="text-xs text-gray-500">
-          *Лист генерується локально в браузері. Нічого не відправляється на сервер.
-        </p>
+        <p className="help">*Лист генерується локально в браузері. Нічого не відправляється на сервер.</p>
       </section>
 
-      {/* Превʼю */}
-      <section className="rounded-2xl border bg-white p-4">
-        <h2 className="text-sm font-medium mb-2">Прев’ю</h2>
-        <div id="preview-hook" className="max-w-none whitespace-pre-wrap">
-          {output || "Тут з’явиться згенерований лист у датському форматі."}
+      {/* Права колонка — липке превʼю + історія */}
+      <aside className="relative">
+        <div className="sticky top-6 space-y-4">
+          <section className="card">
+            <h2 className="section-title mb-2">Прев’ю</h2>
+            <div id="preview-hook" className="max-w-none whitespace-pre-wrap">
+              {output || "Тут з’явиться згенерований лист у датському форматі."}
+            </div>
+          </section>
+
+          <section className="card">
+            <HistoryPanel
+              items={history}
+              onLoad={loadFromHistory}
+              onDelete={deleteFromHistory}
+              onClear={clearAllHistory}
+            />
+          </section>
         </div>
-      </section>
+      </aside>
     </div>
   );
 }
+
 
 
 
